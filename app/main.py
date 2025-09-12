@@ -24,7 +24,7 @@ API allows converting Microsoft Office files to LibreOffice formats:
 - Publisher (.pub) → ODT/ODP  
 - Access (.mdb/.accdb) → ODS via export
 """,
-    version="2.0.0",
+    version="2.0.1",
 )
 
 # Supported formats
@@ -62,8 +62,8 @@ async def convert(file: UploadFile = File(..., description="Microsoft Office fil
     output_stream = BytesIO()
     filename = ""
 
-    # --- Python-based conversion ---
     try:
+        # --- Python-based conversion ---
         if ext in PYTHON_SUPPORTED["excel"]:
             wb = openpyxl.load_workbook(BytesIO(contents))
             sheet = wb.active
@@ -85,23 +85,33 @@ async def convert(file: UploadFile = File(..., description="Microsoft Office fil
             odp = OpenDocumentPresentation()
             for slide in prs.slides:
                 page = Page()
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text:
-                        frame = Frame()
-                        textbox = TextBox()
-                        textbox.addElement(P(text=shape.text))
-                        frame.addElement(textbox)
-                        page.addElement(frame)
+                try:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                            text = shape.text.strip() if shape.text else ""
+                            if text:
+                                frame = Frame()
+                                textbox = TextBox()
+                                textbox.addElement(P(text=text))
+                                frame.addElement(textbox)
+                                page.addElement(frame)
+                except Exception as e:
+                    # ignoruj shapes, ktoré spôsobujú chybu
+                    print(f"Warning: Skipping a problematic shape: {e}")
                 odp.presentation.addElement(page)
             odp.save(output_stream)
             filename = f"{name}.odp"
 
         # --- LibreOffice CLI conversion ---
         elif any(ext in v for v in LIBRE_SUPPORTED.values()):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp_in:
-                tmp_in.write(contents)
-                tmp_in.flush()
-                # Determine output extension based on type
+            tmp_in = None
+            tmp_out = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp_in:
+                    tmp_in.write(contents)
+                    tmp_in.flush()
+
+                # Determine output extension
                 if ext in LIBRE_SUPPORTED.get("excel", []):
                     out_ext = "ods"
                 elif ext in LIBRE_SUPPORTED.get("word", []) or ext in LIBRE_SUPPORTED.get("publisher", []):
@@ -115,24 +125,27 @@ async def convert(file: UploadFile = File(..., description="Microsoft Office fil
 
                 tmp_out = f"{tmp_in.name}_converted.{out_ext}"
 
-                try:
-                    subprocess.run(
-                        ["soffice", "--headless", "--convert-to", out_ext, "--outdir", os.path.dirname(tmp_in.name), tmp_in.name],
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
-                    )
-                except subprocess.CalledProcessError as e:
-                    raise HTTPException(status_code=500, detail=f"LibreOffice conversion failed: {e.stderr.decode()}")
+                result = subprocess.run(
+                    ["soffice", "--headless", "--convert-to", out_ext, "--outdir", os.path.dirname(tmp_in.name), tmp_in.name],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+
+                if result.returncode != 0:
+                    raise HTTPException(status_code=500, detail=f"LibreOffice conversion failed: {result.stderr.decode()}")
 
                 with open(tmp_out, "rb") as f:
                     output_stream.write(f.read())
                 output_stream.seek(0)
                 filename = f"{name}.{out_ext}"
 
-                # Cleanup
-                os.remove(tmp_in.name)
-                os.remove(tmp_out)
+            finally:
+                # Cleanup temp files
+                if tmp_in and os.path.exists(tmp_in.name):
+                    os.remove(tmp_in.name)
+                if tmp_out and os.path.exists(tmp_out):
+                    os.remove(tmp_out)
 
         else:
             return JSONResponse(status_code=400, content={"error": "Unsupported file format"})
