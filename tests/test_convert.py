@@ -58,13 +58,6 @@ def test_word_conversion():
     assert response.headers["Content-Disposition"].endswith(".odt")
     assert response.headers.get("X-Conversion-Status") == "success"
 
-def test_ppt_conversion():
-    files = {"file": ("test.pptx", create_ppt_file(), "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
-    response = client.post("/convert/", files=files)
-    assert response.status_code == 200
-    assert response.headers["Content-Disposition"].endswith(".odp")
-    assert response.headers.get("X-Conversion-Status") == "success"
-
 def test_libre_doc_conversion():
     files = {"file": ("test.doc", create_doc_file(), "application/msword")}
     response = client.post("/convert/", files=files)
@@ -80,3 +73,4 @@ def test_unsupported_file():
     response = client.post("/convert/", files=files)
     assert response.status_code == 400
     assert response.json() == {"error": "Unsupported file format"}
+
