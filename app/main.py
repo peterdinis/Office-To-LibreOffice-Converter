@@ -1,5 +1,5 @@
 """
-FastAPI Office to LibreOffice Converter
+FastAPI Office to LibreOffice Converter with CORS and Rate Limiting
 
 Converts Microsoft Office files to LibreOffice formats:
 - Excel (.xlsx/.xls/.xlsm/.xlsb/.xltx/.xltm) → ODS
@@ -8,9 +8,9 @@ Converts Microsoft Office files to LibreOffice formats:
 - Publisher (.pub) → ODT/ODP
 - Access (.mdb/.accdb) → ODS via export
 
-Uses two conversion methods:
-1. Python-based conversion for common formats (faster, no external dependencies)
-2. LibreOffice CLI conversion for complex formats (requires LibreOffice installation)
+Features:
+- CORS enabled for cross-origin requests
+- Rate limiting (10 requests per minute per IP)
 """
 
 import subprocess
@@ -19,9 +19,12 @@ import os
 import logging
 from io import BytesIO
 from collections import OrderedDict
+from datetime import datetime, timedelta
+from typing import Dict
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # Document processing libraries
 from docx import Document
@@ -36,6 +39,9 @@ from pptx import Presentation
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Rate limiting storage (in production, use Redis or similar)
+rate_limit_storage: Dict[str, list] = {}
+
 # FastAPI application instance
 app = FastAPI(
     title="Office to LibreOffice Converter",
@@ -47,9 +53,26 @@ API allows converting Microsoft Office files to LibreOffice formats:
 - PowerPoint (.pptx/.ppt/.ppsx/.pps/.potx/.potm) → ODP  
 - Publisher (.pub) → ODT/ODP  
 - Access (.mdb/.accdb) → ODS via export
+
+Features:
+- CORS enabled for cross-origin requests
+- Rate limiting: 10 requests per minute per IP address
 """,
-    version="2.0.1",
+    version="2.1.0",
 )
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Rate limiting configuration
+RATE_LIMIT_REQUESTS = 10  # Maximum requests per window
+RATE_LIMIT_WINDOW = 60   # Time window in seconds (1 minute)
 
 # Supported file formats configuration
 # These formats can be processed directly with Python libraries
@@ -69,20 +92,116 @@ LIBRE_SUPPORTED = {
 }
 
 
+def check_rate_limit(client_ip: str) -> bool:
+    """
+    Check if client has exceeded rate limit.
+    
+    Args:
+        client_ip: Client IP address
+        
+    Returns:
+        bool: True if within rate limit, False if exceeded
+    """
+    now = datetime.now()
+    
+    # Initialize client record if not exists
+    if client_ip not in rate_limit_storage:
+        rate_limit_storage[client_ip] = []
+    
+    # Remove old requests outside the time window
+    rate_limit_storage[client_ip] = [
+        timestamp for timestamp in rate_limit_storage[client_ip]
+        if (now - timestamp).total_seconds() < RATE_LIMIT_WINDOW
+    ]
+    
+    # Check if within rate limit
+    if len(rate_limit_storage[client_ip]) >= RATE_LIMIT_REQUESTS:
+        return False
+    
+    # Add current request timestamp
+    rate_limit_storage[client_ip].append(now)
+    return True
+
+
+def get_client_ip(request: Request) -> str:
+    """
+    Extract client IP address from request.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        str: Client IP address
+    """
+    # Check for forwarded IP first (for reverse proxies)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    
+    # Check for real IP header
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip
+    
+    # Fall back to direct client IP
+    return request.client.host
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "message": "Office to LibreOffice Converter API",
+        "version": "2.1.0",
+        "features": ["CORS enabled", "Rate limiting"],
+        "endpoints": {
+            "convert": "/convert/",
+            "docs": "/docs",
+            "openapi": "/openapi.json"
+        }
+    }
+
+
+@app.get("/status/")
+async def status():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "rate_limit": {
+            "requests_per_minute": RATE_LIMIT_REQUESTS,
+            "window_seconds": RATE_LIMIT_WINDOW
+        }
+    }
+
+
 @app.post("/convert/")
-async def convert(file: UploadFile = File(..., description="Microsoft Office file to convert")):
+async def convert(request: Request, file: UploadFile = File(..., description="Microsoft Office file to convert")):
     """
     Convert Microsoft Office files to LibreOffice formats.
     
     Args:
+        request: FastAPI request object (for rate limiting)
         file: Uploaded Office file
         
     Returns:
         StreamingResponse: Converted LibreOffice file
         
     Raises:
-        HTTPException: If conversion fails or file format is unsupported
+        HTTPException: If conversion fails, file format is unsupported, or rate limit exceeded
     """
+    # Rate limiting check
+    client_ip = get_client_ip(request)
+    if not check_rate_limit(client_ip):
+        logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+        raise HTTPException(
+            status_code=429, 
+            detail=f"Rate limit exceeded. Maximum {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds.",
+            headers={"Retry-After": str(RATE_LIMIT_WINDOW)}
+        )
+    
+    logger.info(f"Processing conversion request from IP: {client_ip}")
+    
     # Validate file has extension
     if "." not in file.filename:
         raise HTTPException(status_code=400, detail="File must have an extension")
@@ -313,10 +432,12 @@ async def convert(file: UploadFile = File(..., description="Microsoft Office fil
     # Set response headers for file download
     headers = {
         "Content-Disposition": f"attachment; filename={filename}",  # Force download
-        "X-Conversion-Status": "success"                            # Custom status header
+        "X-Conversion-Status": "success",                           # Custom status header
+        "X-Rate-Limit-Remaining": str(RATE_LIMIT_REQUESTS - len(rate_limit_storage.get(client_ip, []))),
+        "X-Rate-Limit-Reset": str(int((datetime.now() + timedelta(seconds=RATE_LIMIT_WINDOW)).timestamp()))
     }
 
-    logger.info(f"Successfully converted {file.filename} to {filename} ({content_length} bytes)")
+    logger.info(f"Successfully converted {file.filename} to {filename} ({content_length} bytes) for IP: {client_ip}")
 
     # Return converted file as streaming response
     return StreamingResponse(
@@ -324,3 +445,8 @@ async def convert(file: UploadFile = File(..., description="Microsoft Office fil
         media_type="application/octet-stream",  # Generic binary file type
         headers=headers
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
