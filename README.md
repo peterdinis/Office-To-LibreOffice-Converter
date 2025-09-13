@@ -74,12 +74,38 @@ Interactive documentation available at:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
+## Rate Limiting
+
+The API implements rate limiting to prevent abuse:
+- **10 requests per minute per IP address**
+- Rate limit headers included in responses:
+  - `X-Rate-Limit-Remaining`: Number of requests remaining
+  - `X-Rate-Limit-Reset`: Timestamp when limit resets
+- HTTP 429 status returned when limit exceeded
+
+## Rate Limiting
+
+The API implements rate limiting to prevent abuse:
+- **10 requests per minute per IP address**
+- Rate limit headers included in responses:
+  - `X-Rate-Limit-Remaining`: Number of requests remaining
+  - `X-Rate-Limit-Reset`: Timestamp when limit resets
+- HTTP 429 status returned when limit exceeded
+
+## CORS Support
+
+Cross-Origin Resource Sharing (CORS) is enabled to allow requests from web applications:
+- All origins are currently allowed (configure specific domains in production)
+- Supports credentials and common HTTP methods
+- Includes necessary headers for cross-origin requests
+
 ## Notes
 
 - PowerPoint conversion extracts text content only
 - Complex formats require LibreOffice installed on the system
 - Application automatically cleans up temporary files after conversion
 - Maximum file size depends on FastAPI configuration
+- CORS is enabled for cross-origin requests
 
 ## Logging
 
