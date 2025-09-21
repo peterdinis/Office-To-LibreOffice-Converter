@@ -6,14 +6,11 @@ Converts Microsoft Office files to LibreOffice formats using Python libraries.
 import logging
 from io import BytesIO
 from collections import OrderedDict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict
-
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-
-# Document processing libraries
 from docx import Document
 from odf.opendocument import OpenDocumentText, OpenDocumentPresentation
 from odf.text import P
@@ -218,7 +215,7 @@ async def convert(request: Request, file: UploadFile = File(...)):
         else:
             # Unsupported format
             supported_list = []
-            for format_type, extensions in SUPPORTED_FORMATS.items():
+            for extensions in SUPPORTED_FORMATS.items():
                 supported_list.extend(extensions)
             
             return JSONResponse(
