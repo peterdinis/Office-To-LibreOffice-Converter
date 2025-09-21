@@ -257,8 +257,3 @@ async def convert(request: Request, file: UploadFile = File(...)):
         media_type="application/octet-stream",
         headers=headers
     )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
